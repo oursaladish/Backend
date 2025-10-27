@@ -20,25 +20,34 @@ const app = express();
 // 🛠️ MIDDLEWARE SETUP
 // ==========================
 
-// ✅ SECURITY: Helmet for basic security headers
+// ✅ Security: Helmet for HTTP header protection
 app.use(helmet());
 
-// ✅ CORS: Simplified configuration for debugging
+// ✅ CORS: Unified configuration (Render + Localhost)
+const allowedOrigins = [
+  "http://localhost:3000",
+  "https://oursaladish-frontend.vercel.app",
+  "https://oursaladish-frontend.onrender.com"
+];
+
 app.use(cors({
-  origin: [
-    "http://localhost:3000",
-    "https://oursaladish-frontend.vercel.app",
-    "https://oursaladish-frontend.vercel.app"
-  ],
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true); // Allow server-to-server/cURL requests
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.warn("❌ CORS blocked for origin:", origin);
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
   credentials: true,
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
   allowedHeaders: [
-    "Content-Type", 
-    "Authorization", 
-    "Accept", 
+    "Content-Type",
+    "Authorization",
+    "Accept",
     "X-Requested-With",
-    "Origin",
-    "Access-Control-Allow-Origin"
+    "Origin"
   ],
   exposedHeaders: ["Authorization"]
 }));
@@ -46,8 +55,8 @@ app.use(cors({
 // ✅ Handle preflight requests globally
 app.options("*", cors());
 
-// ✅ BODY PARSING: Increase limits for potential large payloads
-app.use(express.json({ 
+// ✅ BODY PARSING: Handle JSON payloads safely
+app.use(express.json({
   limit: "10mb",
   verify: (req, res, buf) => {
     try {
@@ -59,9 +68,9 @@ app.use(express.json({
   }
 }));
 
-app.use(express.urlencoded({ 
-  extended: true, 
-  limit: "10mb" 
+app.use(express.urlencoded({
+  extended: true,
+  limit: "10mb"
 }));
 
 // ==========================
@@ -70,54 +79,30 @@ app.use(express.urlencoded({
 
 mongoose
   .connect(process.env.MONGO_URI)
-  .then(() => console.log("✅ MongoDB connected to:", process.env.MONGO_URI))
+  .then(() => console.log("✅ MongoDB connected successfully"))
   .catch((err) => console.error("❌ MongoDB connection error:", err));
 
-
 // ==========================
-// 🧪 TEST ROUTES (Debugging)
+// 🧪 TEST ROUTES
 // ==========================
 
-// ✅ Basic health check
+// Health check
 app.get("/", (req, res) => {
-  res.json({ 
+  res.json({
     message: "🥗 Our Saladish Backend is Running Successfully!",
     timestamp: new Date().toISOString(),
     version: "1.0.0"
   });
 });
 
-// ✅ Detailed health check
 app.get("/api/health", (req, res) => {
-  res.json({ 
+  res.json({
     status: "✅ Healthy",
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || "development",
     database: mongoose.connection.readyState === 1 ? "Connected" : "Disconnected",
-    memory: process.memoryUsage(),
     uptime: process.uptime()
   });
-});
-
-// ✅ CORS test endpoint
-app.get("/api/cors-test", (req, res) => {
-  res.json({ 
-    message: "✅ CORS is working correctly!",
-    yourOrigin: req.headers.origin,
-    allowedOrigins: [
-      "http://localhost:3000",
-      "https://oursaladish-frontend.vercel.app"
-    ],
-    headers: req.headers
-  });
-});
-
-// ✅ Request logger middleware (for debugging)
-app.use((req, res, next) => {
-  console.log(`🌐 ${new Date().toISOString()} ${req.method} ${req.path}`);
-  console.log(`   Origin: ${req.headers.origin}`);
-  console.log(`   Content-Type: ${req.headers['content-type']}`);
-  next();
 });
 
 // ==========================
@@ -133,9 +118,9 @@ app.use("/api/menu", menuRoutes);
 // ==========================
 
 app.get("/api/admin/test", authenticateToken, isAdmin, (req, res) => {
-  res.json({ 
-    message: "✅ Admin verified successfully", 
-    user: req.user 
+  res.json({
+    message: "✅ Admin verified successfully",
+    user: req.user
   });
 });
 
@@ -143,9 +128,9 @@ app.get("/api/admin/test", authenticateToken, isAdmin, (req, res) => {
 // ❌ ERROR HANDLING MIDDLEWARE
 // ==========================
 
-// 404 handler for undefined routes
+// 404 handler
 app.use("*", (req, res) => {
-  res.status(404).json({ 
+  res.status(404).json({
     error: "Route not found",
     path: req.originalUrl,
     method: req.method
@@ -155,36 +140,32 @@ app.use("*", (req, res) => {
 // Global error handler
 app.use((err, req, res, next) => {
   console.error("🚨 Global Error Handler:", err.stack);
-  
-  // Mongoose validation error
+
   if (err.name === "ValidationError") {
     return res.status(400).json({
       error: "Validation Error",
       details: Object.values(err.errors).map(e => e.message)
     });
   }
-  
-  // Mongoose duplicate key error
+
   if (err.code === 11000) {
     return res.status(400).json({
       error: "Duplicate field value entered",
       field: Object.keys(err.keyPattern)[0]
     });
   }
-  
-  // JWT errors
+
   if (err.name === "JsonWebTokenError") {
     return res.status(401).json({ error: "Invalid token" });
   }
-  
+
   if (err.name === "TokenExpiredError") {
     return res.status(401).json({ error: "Token expired" });
   }
-  
-  // Default error
+
   res.status(err.status || 500).json({
-    error: process.env.NODE_ENV === "production" 
-      ? "Internal server error" 
+    error: process.env.NODE_ENV === "production"
+      ? "Internal server error"
       : err.message
   });
 });
@@ -202,13 +183,12 @@ app.listen(PORT, () => {
 🌍 Environment: ${process.env.NODE_ENV || "development"}
 🗄️ Database: ${mongoose.connection.readyState === 1 ? "Connected ✅" : "Disconnected ❌"}
 📅 Started: ${new Date().toISOString()}
-  
+
 📋 Available Test Endpoints:
    • GET  /               - Basic health check
    • GET  /api/health     - Detailed health info
-   • GET  /api/cors-test  - CORS test endpoint
-   • POST /api/login      - User login
    • POST /api/register   - User registration
+   • POST /api/login      - User login
   `);
 });
 
