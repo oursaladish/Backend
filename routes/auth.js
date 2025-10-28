@@ -2,37 +2,43 @@ require("dotenv").config();
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 const User = require("../models/user");
+const SibApiV3Sdk = require("sib-api-v3-sdk"); // ✅ Brevo Official SDK
 
 const router = express.Router();
 
-// ==========================
-// Email transporter setup
-// ==========================
-const transporter = nodemailer.createTransport({
-  host: process.env.MAIL_HOST,
-  port: process.env.MAIL_PORT,
-  secure: false, // Brevo uses TLS on port 587
-  auth: {
-    user: process.env.MAIL_USER,
-    pass: process.env.MAIL_PASS,
-  },
-});
+// =========================================================
+// ⚙️ Configure Brevo SDK
+// =========================================================
+const brevoClient = SibApiV3Sdk.ApiClient.instance;
+const apiKey = brevoClient.authentications["api-key"];
+apiKey.apiKey = process.env.BREVO_API_KEY;
 
+const brevoEmailApi = new SibApiV3Sdk.TransactionalEmailsApi();
 
-transporter.verify((error) => {
-  if (error) {
-    console.error("❌ Email transporter error:", error);
-  } else {
-    console.log("✅ Email transporter ready to send messages!");
+// =========================================================
+// Helper: Send Email via Brevo
+// =========================================================
+async function sendEmailBrevo(to, subject, html) {
+  try {
+    const sendSmtpEmail = new SibApiV3Sdk.SendSmtpEmail({
+      sender: { name: process.env.SENDER_NAME, email: process.env.SENDER_EMAIL },
+      to: [{ email: to }],
+      subject: subject,
+      htmlContent: html,
+    });
+
+    await brevoEmailApi.sendTransacEmail(sendSmtpEmail);
+    console.log(`✅ Email sent successfully to ${to}`);
+  } catch (error) {
+    console.error("❌ Email sending failed:", error.response?.body || error.message);
   }
-});
+}
 
-// ==========================
+// =========================================================
 // 1️⃣ Register User
-// ==========================
+// =========================================================
 router.post("/register", async (req, res) => {
   try {
     const { name, email, password } = req.body;
@@ -42,19 +48,14 @@ router.post("/register", async (req, res) => {
       return res.status(400).json({ error: "All fields are required" });
     }
 
-    // 1️⃣ Check if user already exists
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res.status(400).json({ error: "User already exists" });
     }
 
-    // 2️⃣ Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
-
-    // 3️⃣ Generate verification token
     const emailToken = crypto.randomBytes(32).toString("hex");
 
-    // 4️⃣ Create and save user
     const newUser = new User({
       name,
       email,
@@ -65,26 +66,18 @@ router.post("/register", async (req, res) => {
 
     await newUser.save();
 
-    // 5️⃣ Send verification email
     const verifyLink = `${process.env.BACKEND_URL}/api/auth/verify/${emailToken}`;
-    const mailOptions = {
-      from: `"Our Saladish" <${process.env.GMAIL_USER}>`,
-      to: email,
-      subject: "Verify your email - Our Saladish",
-      html: `
-        <h2>Welcome to Our Saladish, ${name}!</h2>
-        <p>Please confirm your email by clicking the link below:</p>
-        <a href="${verifyLink}" target="_blank">${verifyLink}</a>
-        <br><br>
-        <p>If you didn’t request this, please ignore this email.</p>
-      `,
-    };
+    const html = `
+      <h2>Welcome to Our Saladish, ${name}! 🥗</h2>
+      <p>Please confirm your email by clicking the link below:</p>
+      <a href="${verifyLink}" target="_blank">${verifyLink}</a>
+      <p>If you didn’t request this, please ignore this email.</p>
+    `;
 
-    await transporter.sendMail(mailOptions);
-    console.log(`📧 Verification email sent to ${email}`);
+    await sendEmailBrevo(email, "Verify your email - Our Saladish", html);
 
     res.status(201).json({
-      message: "Registration successful! Please confirm your email to continue.",
+      message: "Registration successful! Please check your email to confirm.",
     });
   } catch (error) {
     console.error("❌ Registration error:", error);
@@ -92,45 +85,34 @@ router.post("/register", async (req, res) => {
   }
 });
 
-// ==========================
-// 2️⃣ Verify Email (Final)
-// ==========================
+// =========================================================
+// 2️⃣ Verify Email
+// =========================================================
 router.get("/verify/:token", async (req, res) => {
   try {
     const { token } = req.params;
     const user = await User.findOne({ emailToken: token });
 
     if (!user) {
-      return res
-        .status(400)
-        .send("<h2>❌ Invalid or expired verification link.</h2>");
+      return res.status(400).send("<h2>❌ Invalid or expired verification link.</h2>");
     }
 
-    // Mark as verified
     user.isVerified = true;
     user.emailToken = undefined;
     await user.save();
 
-    // ✅ Redirect user to frontend success page
     res.redirect(`${process.env.FRONTEND_URL}/email-verified`);
-    
-    // Alternatively, if you want to show HTML directly:
-    // res.send("<h2>✅ Email verified successfully! You can now log in.</h2>");
   } catch (error) {
     console.error("Email verification error:", error);
-    res
-      .status(500)
-      .send("<h2>⚠️ Something went wrong during verification.</h2>");
+    res.status(500).send("<h2>⚠️ Something went wrong during verification.</h2>");
   }
 });
 
-
-// ==========================
+// =========================================================
 // 3️⃣ Login
-// ==========================
+// =========================================================
 router.post("/login", async (req, res) => {
   try {
-    console.log("🔐 Login Request:", req.body);
     const { email, password } = req.body;
 
     if (!email || !password)
@@ -145,7 +127,9 @@ router.post("/login", async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ error: "Invalid credentials" });
 
-    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "7d" });
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
+      expiresIn: "7d",
+    });
 
     res.json({
       user: {
@@ -162,9 +146,9 @@ router.post("/login", async (req, res) => {
   }
 });
 
-// ==========================
+// =========================================================
 // 4️⃣ Forgot Password
-// ==========================
+// =========================================================
 router.post("/forgot-password", async (req, res) => {
   try {
     const { email } = req.body;
@@ -176,16 +160,14 @@ router.post("/forgot-password", async (req, res) => {
     });
 
     const resetLink = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
-    await transporter.sendMail({
-      from: `"Our Saladish" <${process.env.GMAIL_USER}>`,
-      to: email,
-      subject: "Reset Your Password - Our Saladish",
-      html: `
-        <p>Hi ${user.name},</p>
-        <p>Click here to reset your password:</p>
-        <a href="${resetLink}" target="_blank">Reset Password</a>
-      `,
-    });
+    const html = `
+      <h3>Reset Your Password 🔐</h3>
+      <p>Click the link below to reset your password:</p>
+      <a href="${resetLink}" target="_blank">${resetLink}</a>
+      <p>This link will expire in 1 hour.</p>
+    `;
+
+    await sendEmailBrevo(email, "Reset your password - Our Saladish", html);
 
     res.json({ message: "✅ Password reset link sent to your email!" });
   } catch (error) {
@@ -194,9 +176,9 @@ router.post("/forgot-password", async (req, res) => {
   }
 });
 
-// ==========================
+// =========================================================
 // 5️⃣ Reset Password
-// ==========================
+// =========================================================
 router.post("/reset-password/:token", async (req, res) => {
   try {
     const { token } = req.params;

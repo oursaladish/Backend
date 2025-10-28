@@ -12,7 +12,7 @@ const transporter = nodemailer.createTransport({
 });
 
 transporter.sendMail({
-  from: `"Our Saladish" <${process.env.GMAIL_USER}>`,
+  from: `"Our Saladish" <${process.env.MAIL_USER}>`,
   to: "oursaladish@gmail.com",
   subject: "Test Email from Backend",
   text: "This confirms Gmail SMTP is working!",
