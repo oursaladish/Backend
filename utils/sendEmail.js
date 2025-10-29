@@ -1,8 +1,5 @@
 import axios from "axios";
 
-console.log("📧 BREVO_EMAIL:", process.env.BREVO_SENDER_EMAIL);
-console.log("🔑 BREVO_API_KEY exists:", !!process.env.BREVO_API_KEY);
-
 export const sendBrevoEmail = async (to, subject, html) => {
   try {
     const response = await axios.post(
