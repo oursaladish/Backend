@@ -1,28 +1,24 @@
-import axios from "axios";
+// utils/sendEmail.js
+const SibApiV3Sdk = require('sib-api-v3-sdk');
+const client = SibApiV3Sdk.ApiClient.instance;
 
-export const sendBrevoEmail = async (to, subject, html) => {
-  try {
-    const response = await axios.post(
-      "https://api.brevo.com/v3/smtp/email",
-      {
-        sender: {
-          name: "Our Saladish",
-          email: process.env.BREVO_SENDER_EMAIL || "our.saladish@gmail.com",
-        },
-        to: [{ email: to }],
-        subject,
-        htmlContent: html,
-      },
-      {
-        headers: {
-          "api-key": process.env.BREVO_API_KEY,
-          "Content-Type": "application/json",
-        },
-      }
-    );
+const apiKey = client.authentications['api-key'];
+apiKey.apiKey = process.env.BREVO_API_KEY;
 
-    console.log("✅ Brevo Email Sent:", response.data);
-  } catch (error) {
-    console.error("❌ Brevo Email Error:", error.response?.data || error.message);
-  }
+const emailApi = new SibApiV3Sdk.TransactionalEmailsApi();
+
+const sendConfirmationEmail = async (userEmail, userName, confirmationLink) => {
+  const emailData = {
+    sender: {
+      name: "Our Saladish",
+      email: "noreply@oursaladish.shop" // ✅ Verified sender
+    },
+    to: [{ email: userEmail }],
+    subject: "Confirm your email",
+    htmlContent: `<p>Hi ${userName}, click <a href="${confirmationLink}">here</a> to confirm your email.</p>`
+  };
+
+  return emailApi.sendTransacEmail(emailData);
 };
+
+module.exports = sendConfirmationEmail;

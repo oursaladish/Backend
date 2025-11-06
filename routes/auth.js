@@ -3,41 +3,60 @@ const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
-const User = require("../models/user");
-const SibApiV3Sdk = require("sib-api-v3-sdk"); // ✅ Brevo Official SDK
+const User = require("../models/User");
 
-const router = express.Router();
+// -----------------------------
+// Brevo (Sendinblue) SDK setup
+// -----------------------------
+const SibApiV3Sdk = require("sib-api-v3-sdk");
 
-// =========================================================
-// ⚙️ Configure Brevo SDK
-// =========================================================
 const brevoClient = SibApiV3Sdk.ApiClient.instance;
-const apiKey = brevoClient.authentications["api-key"];
-apiKey.apiKey = process.env.BREVO_API_KEY;
+const apiKeyAuth = brevoClient.authentications["api-key"];
+apiKeyAuth.apiKey = process.env.BREVO_API_KEY;
 
 const brevoEmailApi = new SibApiV3Sdk.TransactionalEmailsApi();
 
-// =========================================================
-// Helper: Send Email via Brevo
-// =========================================================
-async function sendEmailBrevo(to, subject, html) {
-  try {
-    const sendSmtpEmail = new SibApiV3Sdk.SendSmtpEmail({
-      sender: { name: process.env.SENDER_NAME, email: process.env.SENDER_EMAIL },
-      to: [{ email: to }],
-      subject: subject,
-      htmlContent: html,
-    });
+const EMAIL_REQUIRED = (process.env.EMAIL_REQUIRED || "false").toLowerCase() === "true";
 
-    await brevoEmailApi.sendTransacEmail(sendSmtpEmail);
-    console.log(`✅ Email sent successfully to ${to}`);
+const router = express.Router();
+
+/**
+ * ✅ Helper: Send transactional email using Brevo
+ */
+async function sendEmailBrevo(to, subject, htmlContent) {
+  const senderEmail = process.env.SENDER_EMAIL;
+  const senderName = process.env.SENDER_NAME || "Our Saladish";
+
+  if (!senderEmail) {
+    const msg = "SENDER_EMAIL is not set in .env";
+    console.error("❌ Email sending failed:", msg);
+    if (EMAIL_REQUIRED) throw new Error(msg);
+    return { skipped: true, reason: msg };
+  }
+
+  const emailPayload = {
+    sender: { email: senderEmail, name: senderName },
+    to: [{ email: to }],
+    subject,
+    htmlContent,
+  };
+
+  try {
+    const resp = await brevoEmailApi.sendTransacEmail(emailPayload);
+    return resp;
   } catch (error) {
-    console.error("❌ Email sending failed:", error.response?.body || error.message);
+    const code = error?.response?.body?.code || error?.code || "unknown_error";
+    const message = error?.response?.body?.message || error?.message || "Email send failed";
+
+    console.error("❌ Email sending failed:", { code, message });
+
+    if (EMAIL_REQUIRED) throw new Error("Email sending failed");
+    return { failed: true, code, message };
   }
 }
 
 // =========================================================
-// 1️⃣ Register User
+// 1️⃣ REGISTER USER
 // =========================================================
 router.post("/register", async (req, res) => {
   try {
@@ -66,27 +85,29 @@ router.post("/register", async (req, res) => {
 
     await newUser.save();
 
-    const verifyLink = `${process.env.BACKEND_URL}/api/auth/verify/${emailToken}`;
+    // ✅ Build verification link for backend (Render)
+    const verifyLink = `${process.env.BACKEND_URL || "http://localhost:5000"}/api/verify/${emailToken}`;
+
     const html = `
       <h2>Welcome to Our Saladish, ${name}! 🥗</h2>
-      <p>Please confirm your email by clicking the link below:</p>
-      <a href="${verifyLink}" target="_blank">${verifyLink}</a>
+      <p>Thanks for registering! Please confirm your email by clicking below:</p>
+      <a href="${verifyLink}" target="_blank" style="color:#00bfa6;font-weight:bold;">Verify Email</a>
       <p>If you didn’t request this, please ignore this email.</p>
     `;
 
     await sendEmailBrevo(email, "Verify your email - Our Saladish", html);
 
-    res.status(201).json({
+    return res.status(201).json({
       message: "Registration successful! Please check your email to confirm.",
     });
   } catch (error) {
     console.error("❌ Registration error:", error);
-    res.status(500).json({ error: "Server error during registration" });
+    return res.status(500).json({ error: "Server error during registration" });
   }
 });
 
 // =========================================================
-// 2️⃣ Verify Email
+// 2️⃣ VERIFY EMAIL
 // =========================================================
 router.get("/verify/:token", async (req, res) => {
   try {
@@ -101,7 +122,10 @@ router.get("/verify/:token", async (req, res) => {
     user.emailToken = undefined;
     await user.save();
 
-    res.redirect(`${process.env.FRONTEND_URL}/email-verified`);
+    console.log(`✅ ${user.email} verified successfully`);
+
+    // ✅ Redirect to live frontend domain (GoDaddy)
+    return res.redirect(`${process.env.FRONTEND_URL || "https://www.oursaladish.shop"}/login?verified=true`);
   } catch (error) {
     console.error("Email verification error:", error);
     res.status(500).send("<h2>⚠️ Something went wrong during verification.</h2>");
@@ -109,7 +133,7 @@ router.get("/verify/:token", async (req, res) => {
 });
 
 // =========================================================
-// 3️⃣ Login
+// 3️⃣ LOGIN
 // =========================================================
 router.post("/login", async (req, res) => {
   try {
@@ -125,13 +149,12 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ error: "Please confirm your email first" });
 
     const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(400).json({ error: "Invalid credentials" });
+    if (!isMatch)
+      return res.status(400).json({ error: "Invalid credentials" });
 
-    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
-      expiresIn: "7d",
-    });
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "7d" });
 
-    res.json({
+    return res.json({
       user: {
         id: user._id,
         name: user.name,
@@ -142,42 +165,43 @@ router.post("/login", async (req, res) => {
     });
   } catch (error) {
     console.error("❌ Login error:", error);
-    res.status(500).json({ error: "Login failed" });
+    return res.status(500).json({ error: "Login failed" });
   }
 });
 
 // =========================================================
-// 4️⃣ Forgot Password
+// 4️⃣ FORGOT PASSWORD
 // =========================================================
 router.post("/forgot-password", async (req, res) => {
   try {
     const { email } = req.body;
+
     const user = await User.findOne({ email });
-    if (!user) return res.status(400).json({ error: "User not found" });
+    if (!user)
+      return res.status(400).json({ error: "User not found" });
 
-    const resetToken = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
-      expiresIn: "1h",
-    });
+    const resetToken = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "1h" });
 
-    const resetLink = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
+    const resetLink = `${process.env.FRONTEND_URL || "http://localhost:3000"}/reset-password/${resetToken}`;
+
     const html = `
       <h3>Reset Your Password 🔐</h3>
       <p>Click the link below to reset your password:</p>
-      <a href="${resetLink}" target="_blank">${resetLink}</a>
+      <a href="${resetLink}" target="_blank" style="color:#00bfa6;font-weight:bold;">Reset Password</a>
       <p>This link will expire in 1 hour.</p>
     `;
 
     await sendEmailBrevo(email, "Reset your password - Our Saladish", html);
 
-    res.json({ message: "✅ Password reset link sent to your email!" });
+    return res.json({ message: "✅ Password reset link sent to your email!" });
   } catch (error) {
     console.error("Forgot password error:", error);
-    res.status(500).json({ error: "Failed to send reset email" });
+    return res.status(500).json({ error: "Failed to send reset email" });
   }
 });
 
 // =========================================================
-// 5️⃣ Reset Password
+// 5️⃣ RESET PASSWORD
 // =========================================================
 router.post("/reset-password/:token", async (req, res) => {
   try {
@@ -186,15 +210,17 @@ router.post("/reset-password/:token", async (req, res) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const user = await User.findById(decoded.id);
-    if (!user) return res.status(400).json({ error: "Invalid or expired token" });
+
+    if (!user)
+      return res.status(400).json({ error: "Invalid or expired token" });
 
     user.password = await bcrypt.hash(password, 10);
     await user.save();
 
-    res.json({ message: "✅ Password updated successfully!" });
+    return res.json({ message: "✅ Password updated successfully!" });
   } catch (error) {
     console.error("Reset password error:", error);
-    res.status(400).json({ error: "Invalid or expired token" });
+    return res.status(400).json({ error: "Invalid or expired token" });
   }
 });
 

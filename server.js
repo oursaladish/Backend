@@ -1,3 +1,4 @@
+
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
@@ -16,164 +17,135 @@ const isAdmin = require("./middlewares/isAdmin");
 // Initialize app
 const app = express();
 
-// ==========================
-// 🛠️ MIDDLEWARE SETUP
-// ==========================
-
-// ✅ Security: Helmet for HTTP header protection
-app.use(helmet());
-
-// ✅ CORS: Unified configuration (Render + Localhost)
+/* ================================
+   ✅ CORS CONFIGURATION
+================================ */
 const allowedOrigins = [
+  "https://oursaladish.vercel.app",
+  "https://oursaladish.shop",
+  "https://www.oursaladish.shop",
+  "https://api.oursaladish.shop",
+  "https://oursaladish.onrender.com",
   "http://localhost:3000",
-  "https://oursaladish-frontend.vercel.app",
-  "https://oursaladish-frontend.onrender.com"
 ];
 
-app.use(cors({
+const corsOptions = {
   origin: function (origin, callback) {
-    if (!origin) return callback(null, true); // Allow server-to-server/cURL requests
-    if (allowedOrigins.includes(origin)) {
+    if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      console.warn("❌ CORS blocked for origin:", origin);
+      console.warn("❌ Blocked by CORS:", origin);
       callback(new Error("Not allowed by CORS"));
     }
   },
   credentials: true,
-  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-  allowedHeaders: [
-    "Content-Type",
-    "Authorization",
-    "Accept",
-    "X-Requested-With",
-    "Origin"
-  ],
-  exposedHeaders: ["Authorization"]
-}));
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  optionsSuccessStatus: 200,
+};
 
-// ✅ Handle preflight requests globally
-app.options("*", cors());
+// ✅ CORS before Helmet
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 
-// ✅ BODY PARSING: Handle JSON payloads safely
-app.use(express.json({
-  limit: "10mb",
-  verify: (req, res, buf) => {
-    try {
-      JSON.parse(buf);
-    } catch (e) {
-      res.status(400).json({ error: "Invalid JSON in request body" });
-      throw new Error("Invalid JSON");
-    }
-  }
-}));
+/* ================================
+   ✅ SECURITY HEADERS
+================================ */
+app.use(helmet());
 
-app.use(express.urlencoded({
-  extended: true,
-  limit: "10mb"
-}));
+// ✅ (Optional) Relax Render headers
+app.use((req, res, next) => {
+  res.removeHeader("Cross-Origin-Resource-Policy");
+  res.removeHeader("Cross-Origin-Embedder-Policy");
+  next();
+});
 
-// ==========================
-// 🗄️ DATABASE CONNECTION
-// ==========================
+/* ================================
+   ✅ BODY PARSERS
+================================ */
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
+/* ================================
+   🗄️ DATABASE CONNECTION
+================================ */
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => console.log("✅ MongoDB connected successfully"))
   .catch((err) => console.error("❌ MongoDB connection error:", err));
 
-// ==========================
-// 🧪 TEST ROUTES
-// ==========================
+/* ================================
+   🚀 ROUTES
+================================ */
 
-// Health check
+// Health check route
 app.get("/", (req, res) => {
   res.json({
     message: "🥗 Our Saladish Backend is Running Successfully!",
     timestamp: new Date().toISOString(),
-    version: "1.0.0"
+    version: "1.0.0",
   });
 });
 
+// Detailed health route
 app.get("/api/health", (req, res) => {
   res.json({
     status: "✅ Healthy",
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || "development",
-    database: mongoose.connection.readyState === 1 ? "Connected" : "Disconnected",
-    uptime: process.uptime()
+    database:
+      mongoose.connection.readyState === 1 ? "Connected" : "Disconnected",
+    uptime: process.uptime(),
   });
 });
 
-// ==========================
-// 🚀 API ROUTES
-// ==========================
-
+// ✅ All API routes
 app.use("/api", authRoutes);
 app.use("/api/orders", ordersRoute);
 app.use("/api/menu", menuRoutes);
 
-// ==========================
-// 👑 ADMIN ROUTES
-// ==========================
-
+// ✅ Admin test route
 app.get("/api/admin/test", authenticateToken, isAdmin, (req, res) => {
   res.json({
     message: "✅ Admin verified successfully",
-    user: req.user
+    user: req.user,
   });
 });
 
-// ==========================
-// ❌ ERROR HANDLING MIDDLEWARE
-// ==========================
-
+/* ================================
+   ❌ ERROR HANDLING
+================================ */
 // 404 handler
 app.use("*", (req, res) => {
   res.status(404).json({
     error: "Route not found",
     path: req.originalUrl,
-    method: req.method
+    method: req.method,
   });
 });
 
 // Global error handler
 app.use((err, req, res, next) => {
-  console.error("🚨 Global Error Handler:", err.stack);
+  console.error("🚨 Global Error Handler:", err.message);
 
-  if (err.name === "ValidationError") {
-    return res.status(400).json({
-      error: "Validation Error",
-      details: Object.values(err.errors).map(e => e.message)
+  if (err.message === "Not allowed by CORS") {
+    return res.status(403).json({
+      error: "CORS Error",
+      details: "This origin is not allowed to access the API.",
     });
-  }
-
-  if (err.code === 11000) {
-    return res.status(400).json({
-      error: "Duplicate field value entered",
-      field: Object.keys(err.keyPattern)[0]
-    });
-  }
-
-  if (err.name === "JsonWebTokenError") {
-    return res.status(401).json({ error: "Invalid token" });
-  }
-
-  if (err.name === "TokenExpiredError") {
-    return res.status(401).json({ error: "Token expired" });
   }
 
   res.status(err.status || 500).json({
-    error: process.env.NODE_ENV === "production"
-      ? "Internal server error"
-      : err.message
+    error:
+      process.env.NODE_ENV === "production"
+        ? "Internal server error"
+        : err.message,
   });
 });
 
-// ==========================
-// 🔥 SERVER STARTUP
-// ==========================
-
+/* ================================
+   🔥 SERVER STARTUP
+================================ */
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
@@ -181,18 +153,19 @@ app.listen(PORT, () => {
 🚀 Our Saladish Backend Server Started!
 📍 Port: ${PORT}
 🌍 Environment: ${process.env.NODE_ENV || "development"}
-🗄️ Database: ${mongoose.connection.readyState === 1 ? "Connected ✅" : "Disconnected ❌"}
+🗄️ Database: ${
+    mongoose.connection.readyState === 1 ? "Connected ✅" : "Disconnected ❌"
+  }
 📅 Started: ${new Date().toISOString()}
 
-📋 Available Test Endpoints:
-   • GET  /               - Basic health check
-   • GET  /api/health     - Detailed health info
-   • POST /api/register   - User registration
-   • POST /api/login      - User login
-  `);
+✅ Frontend URL: ${process.env.FRONTEND_URL || "Not set"}
+✅ Backend URL: ${process.env.BACKEND_URL || "Not set"}
+`);
 });
 
-// Graceful shutdown
+/* ================================
+   🧹 GRACEFUL SHUTDOWN
+================================ */
 process.on("SIGINT", async () => {
   console.log("\n🛑 Shutting down gracefully...");
   await mongoose.connection.close();
